@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="nl" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#0b0e14">
+<title>Northstar · Markten</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><rect width=%22100%22 height=%22100%22 rx=%2228%22 fill=%22%2300d084%22/><path d=%22M26 68 L44 44 L58 56 L76 32%22 fill=%22none%22 stroke=%22%230b0e14%22 stroke-width=%228%22 stroke-linecap=%22round%22 stroke-linejoin=%22round%22/></svg>">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,700;12..96,800&display=swap">
+<link rel="stylesheet" href="css/style.css?v=resp6">
+<script>
+  (function(){
+    try{
+      var th = localStorage.getItem('pf_tracker_theme');
+      if(th) document.documentElement.dataset.theme = th;
+    }catch(e){}
+    // Kleur van de adresbalk op mobiel volgt het gekozen thema
+    var tc = {dark:'#0b0e14', light:'#f8fafc', crypto_binance:'#0b0e11', crypto_cmc:'#0b0e14'};
+    var m = document.querySelector('meta[name=theme-color]');
+    if(m) m.content = tc[document.documentElement.dataset.theme] || '#0b0e14';
+  })();
+</script>
+</head>
+<body>
+<div class="ns-app">
+  <!-- Northstar Top Navigation Bar -->
+  <header class="ns-topbar">
+    <div class="ns-topbar-inner">
+      <div class="ns-topbar-left">
+        <a href="index.html#/" class="ns-logo">
+          <span class="ns-logo-icon">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="#0b0e14" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">
+              <polyline points="22 7 13.5 15.5 8.5 10.5 2 17"></polyline>
+              <polyline points="16 7 22 7 22 13"></polyline>
+            </svg>
+          </span>
+          <span class="ns-logo-text">Northstar</span>
+        </a>
+        <nav class="ns-nav" id="nav"></nav>
+      </div>
+      <div class="ns-topbar-right">
+        <button class="ns-icon-btn" data-act="refresh" title="Vernieuw koersen">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"></path>
+            <path d="M13.73 21a2 2 0 0 1-3.46 0"></path>
+          </svg>
+        </button>
+        <div class="ns-broker-pill" id="ns_broker_pill" data-act="open_acc_picker" title="Wissel van broker / portfolio"></div>
+        <div id="ns_user_pill"></div>
+      </div>
+    </div>
+  </header>
+
+  <!-- Main Canvas -->
+  <main id="main" class="ns-main"></main>
+</div>
+
+<!-- Mobile Bottom Navigation -->
+<nav class="bottom" id="bnav"></nav>
+<div id="modal" hidden></div>
+<div id="toasts"></div>
+<noscript>Deze pagina heeft JavaScript nodig.</noscript>
+
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+<script src="js/app.js?v=resp5"></script>
+</body>
+</html>

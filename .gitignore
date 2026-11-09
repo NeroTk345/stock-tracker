@@ -1,0 +1,22 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Database
+portfolio_users.db
+*.db
+*.sqlite3
+
+# Cache
+quotes_cache.json
+
+# Environment variables & local secrets
+.env
+.env.local
+
+# Editor & OS files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
