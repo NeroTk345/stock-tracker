@@ -151,7 +151,12 @@ document.head.insertAdjacentHTML('beforeend', `<style>
 .sv-bar-col{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;height:100%;gap:4px}
 .sv-bar{width:100%;max-width:34px;border-radius:5px 5px 0 0;min-height:3px}
 .sv-bar-l{font-size:11px;color:var(--mu);margin-top:6px;text-align:center}
-.sv-chart svg{display:block;width:100%;height:auto}
+.sv-chart{width:100%;min-width:0}
+.sv-chart svg{display:block;width:100%;height:auto;user-select:none;-webkit-user-select:none}
+.sv-chart-bar{display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px}
+.sv-chart-bar .tabs-clean{max-width:100%}
+#sv_detail{min-width:0}
+#sv_detail .panel{min-width:0}
 .sv-note{font-size:11.5px;color:var(--mu);margin-top:10px}
 
 /* Detail page enhancements */
@@ -170,15 +175,29 @@ document.head.insertAdjacentHTML('beforeend', `<style>
   .sv-head{flex-direction:column;align-items:stretch;gap:12px}
   .sv-head .btn{width:100%;justify-content:center}
   .sv-price{font-size:28px}
-  .sv-two{grid-template-columns:1fr;gap:14px}
-  .sv-grid{grid-template-columns:repeat(2,1fr);gap:8px}
+  .sv-two{grid-template-columns:minmax(0,1fr);gap:14px}
+  .sv-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+  .sv-chart-bar{flex-direction:column;align-items:stretch}
+  .sv-chart-bar .tabs-clean{justify-content:space-between}
+  .sv-chart-bar .tabs-clean button{flex:1;padding:7px 4px}
+  /* Tabellen op de detailpagina: compacter i.p.v. vaste 580px breedte */
+  #sv_detail .ns-table{min-width:0}
+  #sv_detail .ns-table th,#sv_detail .ns-table td{padding:8px 6px;font-size:12px}
+  #sv_detail .sv-table th{white-space:normal;font-size:10px;letter-spacing:.02em}
+  #sv_detail .sv-desc{font-size:12.5px}
+}
+@media (max-width:520px){
+  #sv_detail .sv-hide-sm{display:none}
   .sv-stat{padding:8px 10px}
   .sv-stat .v{font-size:13.5px}
   .health-pillar{grid-template-columns:90px 1fr 24px;gap:8px;font-size:12px}
   .ns-nav{display:none}
 }
 @media (max-width:400px){
-  .sv-grid{grid-template-columns:1fr}
+  .sv-stat .l{font-size:10px}
+  .sv-stat .v{font-size:13px}
+  .sv-price{font-size:26px}
+  #sv_detail .ns-table th,#sv_detail .ns-table td{padding:7px 4px;font-size:11.5px}
 }
 </style>`);
 
@@ -331,10 +350,12 @@ function openSearch(initial = ''){
 const RANGES = [['1D','1d','5m'],['1W','5d','30m'],['1M','1mo','1d'],['6M','6mo','1d'],['1J','1y','1d'],['5J','5y','1wk'],['Max','max','1mo']];
 let detailRange = store.get('ns_range', '1J');
 
-function lineChart(ts, closes, cur){
+function lineChart(ts, closes, cur, W = 800){
   const pts = ts.map((t, i) => [t, closes[i]]).filter(p => isNum(p[1]));
   if(pts.length < 2) return '<div class="empty">Geen grafiekdata.</div>';
-  const W = 800, H = 280, pad = {l:8, r:60, t:12, b:24};
+  // Grafiek op echte pixelbreedte tekenen, zodat tekst op mobiel niet mee krimpt
+  W = Math.max(260, Math.round(W));
+  const narrow = W < 520, H = narrow ? 210 : 280, pad = {l:4, r:narrow ? 46 : 60, t:12, b:24};
   const xs = pts.map(p => p[0]), ys = pts.map(p => p[1]);
   const x0 = Math.min(...xs), x1 = Math.max(...xs), y0 = Math.min(...ys), y1 = Math.max(...ys), yr = (y1 - y0) || 1;
   const X = t => pad.l + (t - x0) / ((x1 - x0) || 1) * (W - pad.l - pad.r);
@@ -344,8 +365,8 @@ function lineChart(ts, closes, cur){
   const area = d + ` L${X(x1).toFixed(1)} ${H - pad.b} L${X(x0).toFixed(1)} ${H - pad.b} Z`;
   const grid = [0, .25, .5, .75, 1].map(f => { const v = y0 + f * yr, y = Y(v); return `<line x1="${pad.l}" x2="${W - pad.r}" y1="${y}" y2="${y}" stroke="var(--bd)"/><text x="${W - pad.r + 6}" y="${y + 4}" font-size="11" fill="var(--mu)">${num(v, v < 10 ? 2 : 0)}</text>`; }).join('');
   const span = x1 - x0, fmt = span < 2 * 86400 ? {hour:'2-digit',minute:'2-digit'} : span < 400 * 86400 ? {day:'numeric',month:'short'} : {month:'short',year:'2-digit'};
-  const labels = [0, .25, .5, .75, 1].map(f => { const t = x0 + f * span; return `<text x="${X(t)}" y="${H - 6}" font-size="11" fill="var(--mu)" text-anchor="${f === 0 ? 'start' : f === 1 ? 'end' : 'middle'}">${new Date(t * 1000).toLocaleString('nl-NL', fmt)}</text>`; }).join('');
-  return `<svg viewBox="0 0 ${W} ${H}" data-pts='${JSON.stringify(pts.map(p => [p[0], +p[1].toFixed(4)]))}' data-cur="${esc(cur)}">
+  const labels = (narrow ? [0, .5, 1] : [0, .25, .5, .75, 1]).map(f => { const t = x0 + f * span; return `<text x="${X(t)}" y="${H - 6}" font-size="11" fill="var(--mu)" text-anchor="${f === 0 ? 'start' : f === 1 ? 'end' : 'middle'}">${new Date(t * 1000).toLocaleString('nl-NL', fmt)}</text>`; }).join('');
+  return `<svg viewBox="0 0 ${W} ${H}" data-pts='${JSON.stringify(pts.map(p => [p[0], +p[1].toFixed(4)]))}' data-cur="${esc(cur)}" data-l="${pad.l}" data-w="${W - pad.l - pad.r}" style="touch-action:pan-y">
     <defs><linearGradient id="svg_g" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="${col}" stop-opacity=".22"/><stop offset="1" stop-color="${col}" stop-opacity="0"/></linearGradient></defs>
     ${grid}${labels}<path d="${area}" fill="url(#svg_g)"/><path d="${d}" fill="none" stroke="${col}" stroke-width="2" vector-effect="non-scaling-stroke"/>
     <line id="sv_cx" y1="${pad.t}" y2="${H - pad.b}" stroke="var(--mu)" stroke-dasharray="3 3" visibility="hidden"/>
@@ -360,25 +381,37 @@ async function loadChart(sym, cur){
     const j = await api(`/api/chart?symbol=${encodeURIComponent(sym)}&range=${rng}&interval=${iv}`);
     const r = j.chart?.result?.[0]; if(!r) throw new Error('geen data');
     const closes = r.indicators?.quote?.[0]?.close || [];
-    box.innerHTML = lineChart(r.timestamp || [], closes, r.meta?.currency || cur);
+    const draw = () => { box.innerHTML = lineChart(r.timestamp || [], closes, r.meta?.currency || cur, box.clientWidth || 800); bindChart(box); };
+    draw();
+    // Opnieuw tekenen als de breedte verandert (draaien van telefoon, venster verkleinen)
+    let lastW = box.clientWidth;
+    if(window._svResize) window.removeEventListener('resize', window._svResize);
+    window._svResize = () => { if(!document.body.contains(box)) return; const w = box.clientWidth; if(Math.abs(w - lastW) > 8){ lastW = w; clearTimeout(window._svResizeT); window._svResizeT = setTimeout(draw, 120); } };
+    window.addEventListener('resize', window._svResize);
     const valid = closes.filter(isNum);
     if(valid.length > 1){
       const ch = (valid[valid.length - 1] / valid[0] - 1) * 100;
       $('#sv_range_chg').innerHTML = `<span class="${cls(ch)}">${pct(ch)}</span> <span class="mu">over ${detailRange}</span>`;
     }
-    const svg = box.querySelector('svg');
-    if(svg){
-      const pts = JSON.parse(svg.dataset.pts), c = svg.dataset.cur, line = $('#sv_cx');
-      svg.onmousemove = e => {
-        const rc = svg.getBoundingClientRect(), f = (e.clientX - rc.left) / rc.width;
-        const i = Math.max(0, Math.min(pts.length - 1, Math.round(f * (pts.length - 1))));
-        const x = (8 + i / (pts.length - 1) * (800 - 68));
-        line.setAttribute('x1', x); line.setAttribute('x2', x); line.setAttribute('visibility', 'visible');
-        $('#sv_hover').textContent = new Date(pts[i][0] * 1000).toLocaleString('nl-NL', {dateStyle:'medium', timeStyle: detailRange === '1D' || detailRange === '1W' ? 'short' : undefined}) + ' · ' + money(pts[i][1], c);
-      };
-      svg.onmouseleave = () => { line.setAttribute('visibility', 'hidden'); $('#sv_hover').textContent = ''; };
-    }
   }catch(err){ box.innerHTML = `<div class="empty">Grafiek niet beschikbaar (${esc(err.message)}).</div>`; }
+}
+
+// Hover (muis) én aanraken/slepen (touch) op de grafiek
+function bindChart(box){
+  const svg = box.querySelector('svg'); if(!svg) return;
+  const pts = JSON.parse(svg.dataset.pts), c = svg.dataset.cur, line = $('#sv_cx', box);
+  const L = +svg.dataset.l, PW = +svg.dataset.w, VW = svg.viewBox.baseVal.width;
+  const show = e => {
+    const rc = svg.getBoundingClientRect(), xv = (e.clientX - rc.left) / rc.width * VW;
+    const f = Math.max(0, Math.min(1, (xv - L) / PW));
+    const i = Math.round(f * (pts.length - 1)), x = L + i / (pts.length - 1) * PW;
+    line.setAttribute('x1', x); line.setAttribute('x2', x); line.setAttribute('visibility', 'visible');
+    $('#sv_hover').textContent = new Date(pts[i][0] * 1000).toLocaleString('nl-NL', {dateStyle:'medium', timeStyle: detailRange === '1D' || detailRange === '1W' ? 'short' : undefined}) + ' · ' + money(pts[i][1], c);
+  };
+  const hide = () => { line.setAttribute('visibility', 'hidden'); $('#sv_hover').textContent = ''; };
+  svg.onpointermove = show; svg.onpointerdown = show;
+  svg.onpointerleave = hide; svg.onpointercancel = hide;
+  svg.onpointerup = e => { if(e.pointerType !== 'mouse') setTimeout(hide, 1500); };
 }
 
 function stat(l, v){ return `<div class="sv-stat"><div class="l">${l}</div><div class="v">${v}</div></div>`; }
@@ -403,7 +436,7 @@ function quarterlySection(d, cur){
   // Winst per aandeel: verwachting vs werkelijk
   const epsRows = eps.map(q => {
     const a = raw(q.actual), e = raw(q.estimate), s = isNum(a) && isNum(e) && e !== 0 ? (a - e) / Math.abs(e) * 100 : null;
-    return `<tr><td><b>${esc(q.date)}</b></td><td>${isNum(e) ? num(e, 2) : '–'}</td><td><b>${isNum(a) ? num(a, 2) : '–'}</b></td><td class="${cls(s)}">${isNum(s) ? (s >= 0 ? '+' : '') + pct(s, 1) : '–'}</td></tr>`;
+    return `<tr><td><b>${esc(q.date)}</b></td><td>${isNum(e) ? num(e, 2) : '–'}</td><td><b>${isNum(a) ? num(a, 2) : '–'}</b></td><td class="${cls(s)}">${pct(s, 1)}</td></tr>`;
   }).join('');
   // Laatste kwartalen uit resultatenrekening (kolommen verbergen als data ontbreekt)
   const hasRealProfit = inc.some(q => (raw(q.grossProfit) || 0) > 0 || (raw(q.operatingIncome) || 0) > 0);
@@ -412,12 +445,12 @@ function quarterlySection(d, cur){
     const rev = big(raw(q.totalRevenue), cur);
     const net = big(raw(q.netIncome), cur);
     if(hasRealProfit){
-      return `<tr><td><b>${dt}</b></td><td>${rev}</td><td>${big(raw(q.grossProfit), cur)}</td><td>${big(raw(q.operatingIncome), cur)}</td><td class="${cls(raw(q.netIncome))}">${net}</td></tr>`;
+      return `<tr><td><b>${dt}</b></td><td>${rev}</td><td class="sv-hide-sm">${big(raw(q.grossProfit), cur)}</td><td class="sv-hide-sm">${big(raw(q.operatingIncome), cur)}</td><td class="${cls(raw(q.netIncome))}">${net}</td></tr>`;
     }
     return `<tr><td><b>${dt}</b></td><td>${rev}</td><td class="${cls(raw(q.netIncome))}">${net}</td></tr>`;
   }).join('');
   const incHead = hasRealProfit
-    ? '<tr><th>Kwartaal t/m</th><th>Omzet</th><th>Brutowinst</th><th>Bedrijfsresultaat</th><th>Nettowinst</th></tr>'
+    ? '<tr><th>Kwartaal t/m</th><th>Omzet</th><th class="sv-hide-sm">Brutowinst</th><th class="sv-hide-sm">Bedrijfsresultaat</th><th>Nettowinst</th></tr>'
     : '<tr><th>Kwartaal t/m</th><th>Omzet</th><th>Nettowinst</th></tr>';
   const next = d.calendarEvents?.earnings?.earningsDate?.[0];
   return `<section class="panel" style="margin-top:20px">
@@ -515,7 +548,7 @@ async function pageDetail(sym){
       <button class="btn ${WATCH.has(sym) ? 'pri' : ''}" data-star="${esc(sym)}">${WATCH.has(sym) ? '★ In volglijst' : '☆ Volgen'}</button>
     </div>
     <section class="panel">
-      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+      <div class="sv-chart-bar">
         <div id="sv_range_chg" style="font-weight:700"></div>
         <div class="tabs-clean">${RANGES.map(([l]) => `<button data-range="${l}" data-cur="${esc(cur)}" class="${l === detailRange ? 'on' : ''}">${l}</button>`).join('')}</div>
       </div>
