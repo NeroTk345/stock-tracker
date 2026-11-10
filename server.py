@@ -9,9 +9,29 @@ import hashlib
 import secrets
 import datetime
 import json
+import hmac
+import threading
+import functools
+import time
 
 PORT = 8080 if len(sys.argv) < 2 else int(sys.argv[1])
-DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'portfolio_users.db')
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DB_FILE = os.path.join(BASE_DIR, 'portfolio_users.db')
+
+# Maximale grootte van een JSON-verzoek (portfolio-sync, registratie, ...)
+MAX_BODY_BYTES = 5 * 1024 * 1024
+
+# Wachtwoord-hashing: PBKDF2-HMAC-SHA256, 600.000 iteraties (OWASP-advies).
+# Nieuwe hashes worden opgeslagen als  pbkdf2_sha256$<iteraties>$<hex>
+# zodat het aantal iteraties per gebruiker bekend is en later verhoogd kan worden.
+# Oude hashes (alleen hex, 100.000 iteraties) blijven werken en worden bij de
+# eerstvolgende geslaagde login automatisch omgezet.
+PBKDF2_ITERATIONS = 600_000
+LEGACY_ITERATIONS = 100_000
+
+# Als de server achter een reverse proxy (Caddy/nginx) op dezelfde machine draait,
+# komt elk verzoek van 127.0.0.1. Dan lezen we het echte IP uit X-Forwarded-For.
+TRUSTED_PROXIES = {'127.0.0.1', '::1'}
 
 def get_db():
     conn = sqlite3.connect(DB_FILE)
@@ -50,8 +70,75 @@ def init_db():
 
 init_db()
 
-def hash_password(password, salt_hex):
-    return hashlib.pbkdf2_hmac('sha256', password.encode('utf-8'), bytes.fromhex(salt_hex), 100000).hex()
+def _pbkdf2(password, salt_hex, iterations):
+    return hashlib.pbkdf2_hmac('sha256', password.encode('utf-8'), bytes.fromhex(salt_hex), iterations).hex()
+
+def hash_password(password, salt_hex, iterations=PBKDF2_ITERATIONS):
+    return 'pbkdf2_sha256$%d$%s' % (iterations, _pbkdf2(password, salt_hex, iterations))
+
+def check_password(password, salt_hex, stored):
+    """Geeft (klopt, moet_opnieuw_gehasht_worden) terug. Vergelijkt in constante tijd."""
+    if stored.startswith('pbkdf2_sha256$'):
+        try:
+            _, it, expected = stored.split('$', 2)
+            it = int(it)
+        except ValueError:
+            return False, False
+    else:  # oud formaat
+        it, expected = LEGACY_ITERATIONS, stored
+    ok = hmac.compare_digest(_pbkdf2(password, salt_hex, it), expected)
+    return ok, ok and it < PBKDF2_ITERATIONS
+
+
+class RateLimiter:
+    """Eenvoudige teller per sleutel (bijv. IP) binnen een tijdvenster, in het geheugen."""
+    def __init__(self, max_hits, window_s):
+        self.max_hits, self.window = max_hits, window_s
+        self.hits = {}
+        self.lock = threading.Lock()
+
+    def _prune(self, key, now):
+        q = [t for t in self.hits.get(key, []) if now - t < self.window]
+        if q:
+            self.hits[key] = q
+        else:
+            self.hits.pop(key, None)
+        return q
+
+    def blocked(self, key):
+        """Aantal seconden dat de sleutel nog geblokkeerd is (0 = niet geblokkeerd)."""
+        now = time.time()
+        with self.lock:
+            q = self._prune(key, now)
+            if len(q) >= self.max_hits:
+                return int(self.window - (now - q[0])) + 1
+            return 0
+
+    def hit(self, key):
+        now = time.time()
+        with self.lock:
+            self._prune(key, now)
+            self.hits.setdefault(key, []).append(now)
+            # Geheugen begrenzen bij heel veel verschillende IP's
+            if len(self.hits) > 50_000:
+                for k in list(self.hits)[:10_000]:
+                    self.hits.pop(k, None)
+
+    def reset(self, key):
+        with self.lock:
+            self.hits.pop(key, None)
+
+# Max 10 mislukte logins per 15 min per IP, en 5 per 15 min per e-mailadres
+LOGIN_FAILS_IP = RateLimiter(10, 15 * 60)
+LOGIN_FAILS_EMAIL = RateLimiter(5, 15 * 60)
+# Max 5 nieuwe accounts per uur per IP
+REGISTRATIONS_IP = RateLimiter(5, 60 * 60)
+
+
+def cleanup_expired_sessions():
+    with get_db() as conn:
+        conn.execute('DELETE FROM sessions WHERE expires_at < ?', (datetime.datetime.now().isoformat(),))
+        conn.commit()
 
 def make_empty_portfolio(name):
     return {
@@ -291,17 +378,45 @@ class TrackerHandler(SimpleHTTPRequestHandler):
         auth_hdr = self.headers.get('Authorization', '')
         if auth_hdr.startswith('Bearer '):
             return auth_hdr[7:].strip()
-        parsed = urllib.parse.urlparse(self.path)
-        qs = urllib.parse.parse_qs(parsed.query)
-        return qs.get('token', [''])[0]
+        # Bewust GEEN ?token= in de URL: die belandt in logs en browsergeschiedenis.
+        return ''
+
+    def client_ip(self):
+        ip = self.client_address[0]
+        if ip in TRUSTED_PROXIES:
+            fwd = self.headers.get('X-Forwarded-For', '')
+            if fwd:
+                return fwd.split(',')[-1].strip() or ip
+            real = self.headers.get('X-Real-IP', '').strip()
+            if real:
+                return real
+        return ip
+
+    def too_many(self, seconds):
+        minutes = max(1, (seconds + 59) // 60)
+        payload = json.dumps({'error': f'Te veel pogingen. Probeer het over {minutes} minuten opnieuw.'}).encode('utf-8')
+        self.send_response(429)
+        self.send_header('Content-Type', 'application/json; charset=utf-8')
+        self.send_header('Content-Length', str(len(payload)))
+        self.send_header('Retry-After', str(seconds))
+        self.end_headers()
+        self.wfile.write(payload)
 
     def read_json_body(self):
+        """Leest de JSON-body. Geeft None terug als de body te groot is (er is dan al 413 gestuurd)."""
         try:
             content_len = int(self.headers.get('Content-Length', 0))
-            if content_len == 0:
-                return {}
-            raw = self.rfile.read(content_len).decode('utf-8')
-            return json.loads(raw)
+        except ValueError:
+            content_len = 0
+        if content_len > MAX_BODY_BYTES:
+            self.close_connection = True  # rest van de body niet inlezen
+            self.send_json(413, {'error': 'Verzoek te groot (max %d MB).' % (MAX_BODY_BYTES // (1024 * 1024))})
+            return None
+        if content_len <= 0:
+            return {}
+        try:
+            data = json.loads(self.rfile.read(content_len).decode('utf-8'))
+            return data if isinstance(data, dict) else {}
         except Exception:
             return {}
 
@@ -422,20 +537,21 @@ class TrackerHandler(SimpleHTTPRequestHandler):
         if '/.' in clean_path:
             return self.send_json(404, {'error': 'Niet gevonden.'})
         if self.path in ('/', ''):
-            if os.path.exists('index.html'):
+            if os.path.exists(os.path.join(BASE_DIR, 'index.html')):
                 self.path = '/index.html'
             else:
                 self.path = '/portfolio.html'
         else:
             # Case-insensitivity check voor Linux filesystems
-            local_rel = clean_path.lstrip('/')
-            if not os.path.exists(local_rel):
-                parent_dir = os.path.dirname(local_rel) or '.'
+            local_rel = urllib.parse.unquote(clean_path).lstrip('/')
+            if '..' not in local_rel.split('/') and not os.path.exists(os.path.join(BASE_DIR, local_rel)):
+                parent_rel = os.path.dirname(local_rel)
+                parent_dir = os.path.join(BASE_DIR, parent_rel)
                 base_name = os.path.basename(local_rel).lower()
                 if os.path.isdir(parent_dir):
                     for fname in os.listdir(parent_dir):
                         if fname.lower() == base_name:
-                            self.path = '/' + (os.path.join(parent_dir, fname) if parent_dir != '.' else fname).replace('\\', '/')
+                            self.path = '/' + (parent_rel + '/' + fname if parent_rel else fname)
                             break
         super().do_GET()
 
@@ -443,6 +559,8 @@ class TrackerHandler(SimpleHTTPRequestHandler):
         parsed_url = urllib.parse.urlparse(self.path)
         clean_path = parsed_url.path
         body = self.read_json_body()
+        if body is None:
+            return  # 413 is al verstuurd
 
         # 1. Register (/api/auth/register)
         if clean_path == '/api/auth/register':
@@ -455,8 +573,16 @@ class TrackerHandler(SimpleHTTPRequestHandler):
                 return self.send_json(400, {'error': 'Vul een geldig e-mailadres in.'})
             if len(password) < 6:
                 return self.send_json(400, {'error': 'Het wachtwoord moet minimaal 6 tekens bevatten.'})
+            if len(email) > 254 or len(name) > 100 or len(password) > 1024:
+                return self.send_json(400, {'error': 'Invoer te lang.'})
             if not name:
                 name = email.split('@')[0].capitalize()
+
+            ip = self.client_ip()
+            wait = REGISTRATIONS_IP.blocked(ip)
+            if wait:
+                return self.too_many(wait)
+            REGISTRATIONS_IP.hit(ip)
 
             salt = secrets.token_hex(16)
             pw_hash = hash_password(password, salt)
@@ -507,17 +633,35 @@ class TrackerHandler(SimpleHTTPRequestHandler):
 
             if not email or not password:
                 return self.send_json(400, {'error': 'Vul e-mailadres en wachtwoord in.'})
+            if len(email) > 254 or len(password) > 1024:
+                return self.send_json(401, {'error': 'Ongeldig e-mailadres of wachtwoord.'})
+
+            ip = self.client_ip()
+            wait = max(LOGIN_FAILS_IP.blocked(ip), LOGIN_FAILS_EMAIL.blocked(email))
+            if wait:
+                return self.too_many(wait)
 
             with get_db() as conn:
                 c = conn.cursor()
                 c.execute('SELECT * FROM users WHERE email = ?', (email,))
                 user = c.fetchone()
-                if not user:
+                if user:
+                    ok, needs_rehash = check_password(password, user['salt'], user['password_hash'])
+                else:
+                    # Even lang rekenen als bij een bestaand account, zodat je via de
+                    # responstijd niet kunt zien of een e-mailadres geregistreerd is.
+                    _pbkdf2(password, '00' * 16, PBKDF2_ITERATIONS)
+                    ok, needs_rehash = False, False
+                if not ok:
+                    LOGIN_FAILS_IP.hit(ip)
+                    LOGIN_FAILS_EMAIL.hit(email)
                     return self.send_json(401, {'error': 'Ongeldig e-mailadres of wachtwoord.'})
 
-                expected_hash = hash_password(password, user['salt'])
-                if expected_hash != user['password_hash']:
-                    return self.send_json(401, {'error': 'Ongeldig e-mailadres of wachtwoord.'})
+                LOGIN_FAILS_EMAIL.reset(email)
+                if needs_rehash:
+                    new_salt = secrets.token_hex(16)
+                    c.execute('UPDATE users SET password_hash = ?, salt = ? WHERE id = ?',
+                              (hash_password(password, new_salt), new_salt, user['id']))
 
                 token = secrets.token_hex(32)
                 now_iso = datetime.datetime.now().isoformat()
@@ -585,7 +729,9 @@ if __name__ == '__main__':
     print(f" Open in je browser: http://localhost:{PORT}")
     print(f"==================================================")
     try:
-        httpd = HTTPServer(('0.0.0.0', PORT), TrackerHandler)
+        cleanup_expired_sessions()
+        # directory=BASE_DIR: altijd de projectmap serveren, ongeacht vanuit welke map je start
+        httpd = HTTPServer(('0.0.0.0', PORT), functools.partial(TrackerHandler, directory=BASE_DIR))
     except OSError:
         print(f"\n!! Poort {PORT} is al in gebruik. Draait er nog een oude server? Stop die eerst (Ctrl+C).")
         sys.exit(1)

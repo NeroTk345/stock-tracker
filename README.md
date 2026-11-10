@@ -128,8 +128,12 @@ Alle endpoints ondersteunen CORS en sturen/ontvangen JSON.
 
 - **Wachtwoordbeveiliging**: Wachtwoorden worden **nooit** in platte tekst opgeslagen. De backend gebruikt de industriestandaard **PBKDF2-HMAC-SHA256** met:
   - Een unieke, cryptografisch willekeurige salt van 16 bytes per gebruiker (`secrets.token_hex(16)`).
-  - 100.000 iteraties tegen brute-force aanvallen.
-- **Sessietokens**: Sessietokens zijn cryptografisch willekeurige hex-tokens van 32 bytes (`secrets.token_hex(32)`) die verlopen na 30 dagen.
+  - 600.000 iteraties (OWASP-advies). Het aantal iteraties wordt per hash opgeslagen (`pbkdf2_sha256$600000$...`); oude hashes met 100.000 iteraties worden bij de eerstvolgende login automatisch omgezet.
+  - Hashes worden in constante tijd vergeleken (`hmac.compare_digest`).
+- **Sessietokens**: Sessietokens zijn cryptografisch willekeurige hex-tokens van 32 bytes (`secrets.token_hex(32)`) die verlopen na 30 dagen. Ze worden alleen geaccepteerd via de `Authorization: Bearer`-header, nooit via de URL. Verlopen sessies worden bij het opstarten opgeruimd.
+- **Rate limiting** (in het geheugen): max. 10 mislukte logins per IP en 5 per e-mailadres per 15 minuten, en max. 5 registraties per IP per uur. Daarna volgt `429 Too Many Requests`. Achter een reverse proxy op dezelfde machine wordt het echte IP uit `X-Forwarded-For` gelezen.
+- **Maximale verzoekgrootte**: 5 MB per JSON-verzoek; grotere verzoeken krijgen `413`.
+- **Statische bestanden** worden altijd uit de projectmap geserveerd, ongeacht vanuit welke map de server wordt gestart, en alleen met website-extensies (`.html`, `.css`, `.js`, afbeeldingen, fonts).
 - **E-mailvalidatie**: E-mails worden getrimd en omgezet naar kleine letters (`lower()`) om dubbele registraties te voorkomen.
 
 ---
@@ -143,7 +147,7 @@ Open een terminal (PowerShell of Command Prompt) in de projectmap en start:
 python server.py
 ```
 
-De server start op poort **8080** (of poort 8000 als 8080 bezet is):
+De server start op poort **8080** (een andere poort kan als argument: `python server.py 8000`):
 ```text
 ==================================================
  Northstar Multi-User Server (Auth & Database)
